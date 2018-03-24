@@ -1,0 +1,503 @@
+clc
+clear all
+sum = 0;
+N=61;
+r = 1;
+L=1;
+ 
+for i=1:(N-1)/2
+    sum = sum + r^(i-1);
+end
+ 
+dx = L/(2*sum);
+dy = L/(2*sum);
+ 
+x(1) = 0;
+y(1) = 0;
+x(N) = L;
+y(N) = L;
+j=0;
+for i=1:(N-1)
+    if i <= (N-1)/2
+        x(i+1) = x(i) + dx*r^(i-1);
+        y(i+1) = y(i) + dy*r^(i-1);
+        x(N-i) = x(N-i+1) - dx*r^(i-1);
+        y(N-i) = y(N-i+1) - dy*r^(i-1);
+    end
+end
+ 
+ 
+[X Y] = meshgrid(x,y);
+% 
+plot(X,Y)
+title('Uniform grid, r=1, N = (61x61) ')
+xlabel('{\Delta}x')
+ylabel('{\Delta}y')
+hold on
+plot(Y,X)
+tic;
+
+
+
+Code for Laminar incompressible flow in Generalized Curvilinear Co-ordinates
+clc
+clear all
+format longEng
+r = 1.01;
+Ng = [41 61 101 129 141];
+for ni = 2
+ 
+    N = Ng(ni);
+    L = 1;
+    epsi = 0.0001;
+    Re = 100;
+    dt = 0.001;
+    
+    %Generating Grid
+    gridPoints(1) = 0;
+    sum = 0;
+    x_zeta = ones(N,N); y_eta = ones(N,N);
+    zeta_x = ones(N,N); eta_y = ones(N,N);
+    G = ones(N,N); J = ones(N,N);
+    
+    for i=1:N-1
+        sum = sum + r^(i-1);
+    end
+    dx = L/sum;
+    for i=1:N-1
+        gridPoints(i+1) = gridPoints(i) + dx*(r^(i-1));
+    end
+    
+    %storing values of x in 2D array
+    for i=1:N
+        for j=1:N
+            x(i,j) = gridPoints(j);
+            y(i,j) = gridPoints(i);
+        end
+    end
+    
+    %Calculating Matrices of transformation x-zeta and y-eta using central diff
+    for j=2:N-1
+        for i=2:N-1
+            x_zeta(j,i) = 0.5*(x(j,i+1) - x(j,i-1));
+            x_zeta(1,i) = 0.5*(x(j,i+1) - x(j,i-1));
+            x_zeta(N,i) = 0.5*(x(j,i+1) - x(j,i-1));
+            y_eta(j,i) = 0.5*(y(j+1,i) - y(j-1,i));
+            y_eta(j,1) = 0.5*(y(j+1,1) - y(j-1,1));
+            y_eta(j,N) = 0.5*(y(j+1,N) - y(j-1,N));
+        end
+    end
+    x_zeta(:,1) = x(:,2) - x(:,1);
+    x_zeta(:,N) = x(:,N) - x(:,N-1);
+    y_eta(1,:) = y(2,:) - y(1,:);
+    y_eta(N,:) = y(N,:) - y(N-1,:);
+    
+    %Calculating Jacobian
+    for j=1:N
+        for i=1:N
+            G(j,i) = x_zeta(j,i)*y_eta(j,i);
+            J(j,i) = 1/G(j,i);
+        end
+    end
+    
+    %Calculating zeta_x, eta_y, g11 and g22
+    for j=1:N
+        for i=1:N
+            zeta_x(j,i) = J(j,i)*y_eta(j,i);
+            g11(j,i) = zeta_x(j,i)*zeta_x(j,i);
+            eta_y(j,i) = J(j,i)*x_zeta(j,i);
+            g22(j,i) = eta_y(j,i)*eta_y(j,i);
+        end
+    end
+    
+    %Calculating g11/J and g22/J at half points
+    for j=2:N-1
+        for i=2:N-1
+            g11_half(j,i) = 0.5*(g11(j,i+1) + g11(j,i));
+            g22_half(j,i) = 0.5*(g22(j+1,i) + g22(j,i));
+        end
+    end
+    
+    %Initializing Matrices
+    for j=1:N
+        for i=1:N
+            Q(j,i,1) = 0; %Initial Pressure
+            Q(j,i,2) = 0; %Initial Ux
+            Q(j,i,3) = 0; %Initial Vx
+            P_old(j,i) = 0;
+            U_old(j,i) = 0;
+            V_old(j,i) = 0;
+            dp(j,i) = 0; %Initial Matrix for delta pressure in SIMPLE
+            ustar(j,i) = 0;
+            vstar(j,i) = 0;
+            vorticity(j,i) = 0;
+        end
+    end
+    
+    %Imposing Boundary conditions on U and ustar
+    Q(N,:,2) = 1;
+    u_new = zeros(N,N);
+    v_new = zeros(N,N);
+    u_new(N,:) = 1;
+    ustar(N,:) = 1;
+    rho_1 = zeros(N,N); %similar to variable declaration
+    rho_2 = zeros(N,N); %similar to variable declaration
+    
+    Diss_x = zeros(N,N);
+    Diss_y = zeros(N,N);
+    div = zeros(N,N);
+    
+    epsilon_p = 1E-5;
+    epsilon_u = 1E-5;
+    epsilon_v = 1E-5;
+    
+    error_p = 1;
+    error_u = 1;
+    error_v = 1;
+    
+    total_error_p = 1;
+    total_error_u = 1;
+    total_error_v = 1;
+    
+    itr = 0;
+    iteration = 0;
+    %Convergence loop for time
+    while total_error_u > epsilon_u && total_error_v > epsilon_v
+        %for iteration=1:40000
+        
+        iteration = iteration + 1
+        
+        for j=1:N
+            for i=1:N
+                P_old(j,i) = Q(j,i,1);
+                U_old(j,i) = Q(j,i,2);
+                V_old(j,i) = Q(j,i,3);
+            end
+        end
+        
+        error_p = 1;
+        error_u = 1;
+        error_v = 1;
+        
+        while error_p > epsilon_p && error_u > epsilon_u && error_v > epsilon_v
+            
+            
+            %Computing Contravarient velocities.
+            for j=1:N
+                for i=1:N
+                    U(j,i) = Q(j,i,2) * zeta_x(j,i);
+                    V(j,i) = Q(j,i,3) * eta_y(j,i);
+                end
+            end
+            
+            %Calculating Spectral Radius
+            for j=2:N-1
+                for i=2:N-1
+                    rho_1(j,i) = (abs(U(j,i)) + sqrt(U(j,i)^2 + g11(j,i)))/J(j,i);
+                    rho_2(j,i) = (abs(V(j,i)) + sqrt(V(j,i)^2 + g22(j,i)))/J(j,i);
+                end
+            end
+            
+            %Calculating Spectral Radius at half Points
+            for j=2:N-1
+                for i=2:N-1
+                    rhox(j,i) = 0.5*(rho_1(j,i+1) + rho_1(j,i));
+                    rhoy(j,i) = 0.5*(rho_2(j+1,i) + rho_2(j,i));
+                end
+            end
+            
+            %Calculating Q at half points to be used in dissipation function
+            for k=1:3
+                for j=3:N-2
+                    for i=3:N-2
+                        Q_half_x(j,i,k) = Q(j,i+2,k) - 3*Q(j,i+1,k) + 3*Q(j,i,k) -  Q(j,i-1,k);
+                        Q_half_y(j,i,k) = Q(j+2,i,k) - 3*Q(j+1,i,k) + 3*Q(j,i,k) -  Q(j-1,i,k);
+                    end
+                end
+            end
+            
+            %Calculating Dissipation Function
+            for k=1:3
+                for j=3:N-2
+                    for i=3:N-2
+                        Diss_x(j,i,k) = epsi*((rhox(j,i)*Q_half_x(j,i,k)) - (rhox(j,i-1)*Q_half_x(j,i-1,k)));
+                        Diss_y(j,i,k) = epsi*((rhoy(j,i)*Q_half_y(j,i,k)) - (rhoy(j-1,i)*Q_half_y(j-1,i,k)));
+                    end
+                end
+            end
+            
+            %Calculating Convective terms and adding dissipation to them
+            for j=1:N
+                for i=1:N
+                    E_1_compute_x(j,i,1) = U(j,i)/J(j,i);
+                    E_1_compute_x(j,i,2) = ((Q(j,i,2)*U(j,i))/J(j,i));
+                    E_1_compute_x(j,i,3) = (Q(j,i,3)*U(j,i))/J(j,i);
+                    
+                    E_2_compute_y(j,i,1) = V(j,i)/J(j,i);
+                    E_2_compute_y(j,i,2) = ((Q(j,i,2)*V(j,i)))/J(j,i);
+                    E_2_compute_y(j,i,3) = ((Q(j,i,3)*V(j,i)))/J(j,i);
+                end
+            end
+            
+            for k=1:3
+                for j=2:N-1
+                    for i=2:N-1
+                        DE_1_compute_x(j,i,k) = 0.5*(E_1_compute_x(j,i+1,k) - E_1_compute_x(j,i-1,k)) + Diss_x(j,i,k);
+                        DE_2_compute_y(j,i,k) = 0.5*(E_2_compute_y(j+1,i,k) - E_2_compute_y(j-1,i,k)) + Diss_y(j,i,k);
+                    end
+                end
+            end
+            
+            %Calculating Diffusive terms, here no numerical dissipating needed
+            %First Calculating at half points to maintain 3 point stencil
+            for j=1:N-1
+                for i=1:N-1
+                    J_half_x(j,i) = 0.5*(J(j,i+1) + J(j,i));
+                    J_half_y(j,i) = 0.5*(J(j+1,i) + J(j,i));
+                    
+                    zeta_x_half(j,i) = (0.5*(zeta_x(j,i+1) + zeta_x(j,i)))^2;
+                    eta_y_half(j,i) = (0.5*(eta_y(j+1,i) + eta_y(j,i)))^2;
+                    
+                    u_11(j,i) = (Q(j,i+1,2)-Q(j,i,2));
+                    u_12(j,i) = (Q(j,i+1,3)-Q(j,i,3));
+                    
+                    Ev_1_compute_x(j,i,1) = 0;
+                    Ev_1_compute_x(j,i,2) = (zeta_x_half(j,i)*u_11(j,i)/J_half_x(j,i));
+                    Ev_1_compute_x(j,i,3) = (zeta_x_half(j,i)*u_12(j,i)/J_half_x(j,i));
+                    
+                    u_21(j,i) = (Q(j+1,i,2)-Q(j,i,2));
+                    u_22(j,i) = (Q(j+1,i,3)-Q(j,i,3));
+                    
+                    Ev_2_compute_y(j,i,1) = 0;
+                    Ev_2_compute_y(j,i,2) = (eta_y_half(j,i)*u_21(j,i)/J_half_y(j,i));
+                    Ev_2_compute_y(j,i,3) = (eta_y_half(j,i)*u_22(j,i)/J_half_y(j,i));
+                end
+            end
+            
+            %Calculating viscous terms
+            for k=2:3
+                for j=2:N-1
+                    for i=2:N-1
+                        DEv_1_compute_x(j,i,k) = (Ev_1_compute_x(j,i,k) - Ev_1_compute_x(j,i-1,k))/Re;
+                        DEv_2_compute_y(j,i,k) = (Ev_2_compute_y(j,i,k) - Ev_2_compute_y(j-1,i,k))/Re;
+                    end
+                end
+            end
+            
+            %Calculating Gradient of Pressure
+            for j=2:N-1
+                for i=2:N-1
+                    grad_P_x(j,i) = J(j,i)*0.5*((Q(j,i+1,1)*zeta_x(j,i+1)/J(j,i+1)) - (Q(j,i-1,1)*zeta_x(j,i-1)/J(j,i-1)));
+                    grad_P_y(j,i) = J(j,i)*0.5*((Q(j+1,i,1)*eta_y(j+1,i)/J(j+1,i)) - (Q(j-1,i,1)*eta_y(j-1,i)/J(j-1,i)));
+                end
+            end
+            
+            %Calcuting RHS in computational domain
+            for k=1:3
+                for j=2:N-1
+                    for i = 2:N-1
+                        RHS_compute(j,i,k) = J(j,i)*(-DE_1_compute_x(j,i,k) -DE_2_compute_y(j,i,k) +DEv_1_compute_x(j,i,k) +DEv_2_compute_y(j,i,k));
+                    end
+                end
+            end
+            
+            %Calcuting ustar in SIMPLE Algorithm
+            for j=2:N-1
+                for i=2:N-1
+                    ustar(j,i) = Q(j,i,2) + dt*(RHS_compute(j,i,2) - grad_P_x(j,i));
+                    vstar(j,i) = Q(j,i,3) + dt*(RHS_compute(j,i,3) - grad_P_y(j,i));
+                end
+            end
+            
+            epsilon_dp = 1E-6;
+            error_dp = 1;
+            
+            %Calculating Divergence of ustar
+            for j=2:N-1
+                for i=2:N-1
+                    div(j,i) = 0.5*J(j,i)*((ustar(j,i+1)*zeta_x(j,i+1)/J(j,i+1))-(ustar(j,i-1)*zeta_x(j,i-1)/J(j,i-1)) + (vstar(j+1,i)*eta_y(j+1,i)/J(j+1,i)) - (vstar(j-1,i)*eta_y(j-1,i)/J(j-1,i)));
+                end
+            end
+            
+            dp = zeros(N,N);
+            dp1 = zeros(N,N);
+            
+            while error_dp > epsilon_dp % Loop for convergence of dp
+                
+                %Storing Pressure in new Variable
+                for j=2:N-1
+                    for i=2:N-1
+                        dp(j,i) = dp1(j,i);
+                    end
+                end
+                
+                %Solve Pressure Poisson
+                for j=2:N-1
+                    for i=2:N-1
+                        a = J(j,i)*((g11_half(j,i)*dp(j,i+1)/J_half_x(j,i)) + (g11_half(j,i-1)*dp(j,i-1)/J_half_x(j,i-1)) + (g22_half(j,i)*dp(j+1,i)/J_half_y(j,i)) + (g22_half(j-1,i)*dp(j-1,i)/J_half_y(j-1,i)));
+                        b = -J(j,i)*((g11_half(j,i)/J_half_x(j,i)) + (g11_half(j,i-1)/J_half_x(j,i-1)) + (g22_half(j,i)/J_half_y(j,i)) + (g22_half(j-1,i)/J_half_y(j-1,i)));
+                        dp1(j,i) = ((div(j,i)/dt) - a)/b;
+                        
+                        error_dp = error_dp + (abs((dp1(j,i)) - (dp(j,i))))^2; %Calculating error for delta Pressure
+                        error_dp = sqrt(error_dp)/(N*N);
+                    end
+                end
+            end
+            
+            %Calculating Gradient of delta pressure
+            for j=2:N-1
+                for i=2:N-1
+                    dp(j,i) = dp1(j,i);
+                    grad_dp_x(j,i) = 0.5*((dp(j,i+1)*zeta_x(j,i+1)/J(j,i+1))- (dp(j,i-1)*zeta_x(j,i-1)/J(j,i-1))); %Using Partial Transformation
+                    grad_dp_y(j,i) = 0.5*((dp(j+1,i)*eta_y(j+1,i)/J(j+1,i)) - (dp(j-1,i)*eta_y(j-1,i)/J(j-1,i))); %Using Partial Transformation
+                end
+            end
+            
+            error_p = 0;
+            error_u = 0;
+            error_v = 0;
+            %Correcting Pressure
+            for j=2:N-1
+                for i=2:N-1
+                    Pressure_new(j,i) = Q(j,i,1) + dp(j,i);
+                    u_new(j,i) = ustar(j,i) - dt*J(j,i)*grad_dp_x(j,i);
+                    v_new(j,i) = vstar(j,i) - dt*J(j,i)*grad_dp_y(j,i);
+                end
+            end
+            
+            Pressure_new(1,:) = Pressure_new(2,:);
+            Pressure_new(N,:) = Pressure_new(N-1,:);
+            Pressure_new(:,1) = Pressure_new(:,2);
+            Pressure_new(:,N) = Pressure_new(:,N-1);
+            
+            %Calculating Error of corrections
+            for j=2:N-1
+                for i=2:N-1
+                    error_p = error_p + (abs(Pressure_new(j,i) - (Q(j,i,1))))^2;
+                    error_u = error_u + (abs(u_new(j,i) - (ustar(j,i))))^2;
+                    error_v = error_v + (abs(v_new(j,i) - (vstar(j,i))))^2;
+                end
+            end
+            
+            error_p = sqrt(error_p)/(N*N);
+            error_u = sqrt(error_u)/(N*N);
+            error_v = sqrt(error_v)/(N*N);
+            
+            for j=1:N
+                for i=1:N
+                    Q(j,i,1) = Pressure_new(j,i);
+                    Q(j,i,2) = u_new(j,i);
+                    Q(j,i,3) = v_new(j,i);
+                    Q(1,i,1) = Q(2,i,1);
+                    Q(N,i,1) = Q(N-1,i,1);
+                    Q(j,1,1) = Q(j,2,1);
+                    Q(j,N,1) = Q(j,N-1,1);
+                end
+            end
+        end
+        
+        total_error_p = 0;
+        total_error_u = 0;
+        total_error_v = 0;
+        
+        for j=1:N
+            for i=1:N
+                total_error_p = total_error_p + abs(Q(j,i,1) - P_old(j,i));
+                total_error_u = total_error_u + abs(Q(j,i,2) - U_old(j,i));
+                total_error_v = total_error_v + abs(Q(j,i,3) - V_old(j,i));
+                itr = itr + 1;
+                
+                Error_iteration_p(iteration) = total_error_p;
+                Error_iteration_u(iteration) = total_error_u;
+                Error_iteration_v(iteration) = total_error_v;
+            end
+        end
+    end
+    
+    %Calculating Vorticity
+    for j=2:N-1
+        for i=2:N-1
+            vorticity(j,i) = J(j,i)*(((v_new(j,i+1)*zeta_x(j,i+1)/J(j,i+1)) - (v_new(j,i-1)*zeta_x(j,i-1)/J(j,i-1))) - ((u_new(j+1,i)*eta_y(j+1,i)/J(j+1,i)) - (u_new(j-1,i)*eta_y(j-1,i)/J(j-1,i))));
+        end
+    end
+    
+    if ni == 1
+        xlswrite('x1.xlsx',x);
+        xlswrite('y1.xlsx',y);
+        xlswrite('u1.xlsx',u_new);
+        xlswrite('v1.xlsx',v_new);
+        xlswrite('vor1.xlsx',vorticity);
+        save('error_u1.mat','Error_iteration_u');
+        save('error_v1.mat','Error_iteration_v');
+        save('error_p1.mat','Error_iteration_p');
+    end
+    
+    if ni == 2
+        xlswrite('x2.xlsx',x);
+        xlswrite('y2.xlsx',y);
+        xlswrite('u2.xlsx',u_new);
+        xlswrite('v2.xlsx',v_new);
+        xlswrite('vor2.xlsx',vorticity);
+        save('error_u2.mat','Error_iteration_u');
+        save('error_v2.mat','Error_iteration_v');
+        save('error_p2.mat','Error_iteration_p');
+    end
+    
+    if ni == 3
+        xlswrite('x3.xlsx',x);
+        xlswrite('y3.xlsx',y);
+        xlswrite('u3.xlsx',u_new);
+        xlswrite('v3.xlsx',v_new);
+        xlswrite('vor3.xlsx',vorticity);
+        save('error_u3.mat','Error_iteration_u');
+        save('error_v3.mat','Error_iteration_v');
+        save('error_p3.mat','Error_iteration_p');
+    end
+    
+    if ni == 4
+        xlswrite('x4.xlsx',x);
+        xlswrite('y4.xlsx',y);
+        xlswrite('u4.xlsx',u_new);
+        xlswrite('v4.xlsx',v_new);
+        xlswrite('vor4.xlsx',vorticity);
+        save('error_u4.mat','Error_iteration_u');
+        save('error_v4.mat','Error_iteration_v');
+        save('error_p4.mat','Error_iteration_p');
+    end
+    
+    if ni == 5
+        xlswrite('x5.xlsx',x);
+        xlswrite('y5.xlsx',y);
+        xlswrite('u5.xlsx',u_new);
+        xlswrite('v5.xlsx',v_new);
+        xlswrite('vor5.xlsx',vorticity);
+        save('error_u5.mat','Error_iteration_u');
+        save('error_v5.mat','Error_iteration_v');
+        save('error_p5.mat','Error_iteration_p');
+    end
+    
+% xlsxwrite('p.xlsx',Pressure_new);
+    
+%     figure(1);
+%     contour(x,y,vorticity)
+%     colorbar;
+%     title('Vorticity for Re,N = ');
+%     xlabel('{\Delta}x')
+%     ylabel('{\Delta}y')
+%     % saveas(fig,'vorticity.jpg')
+%     
+%     figure(2);
+%     quiver(x,y,u_new,v_new);
+%     title('Velocity vectors for Re,N = ');
+%     xlabel('{\Delta}x');
+%     ylabel('{\Delta}y');
+%     % saveas(fig,'velocity_vec.jpg')
+%     
+%     figure(3);
+%     streamslice(x,y,u_new,v_new);
+%     title('RE = Re, Uniform Grid (N*N)')
+%     xlabel('{\Delta}x');
+%     ylabel('{\Delta}y')
+    % saveas(fig,'streamlines.jpg')
+end
+toc;
